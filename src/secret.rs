@@ -16,6 +16,7 @@ use curve25519_dalek::digest::generic_array::typenum::U64;
 use curve25519_dalek::digest::Digest;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::scalar::Scalar;
+use std::sync::mpsc::{channel, TryRecvError};
 
 #[cfg(feature = "rand")]
 use rand::{CryptoRng, RngCore};
@@ -27,7 +28,7 @@ use serde::de::Error as SerdeError;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "serde")]
-use serde_bytes::{Bytes as SerdeBytes, ByteBuf as SerdeByteBuf};
+use serde_bytes::{ByteBuf as SerdeByteBuf, Bytes as SerdeBytes};
 
 use zeroize::Zeroize;
 
@@ -108,7 +109,8 @@ impl SecretKey {
             return Err(InternalError::BytesLengthError {
                 name: "SecretKey",
                 length: SECRET_KEY_LENGTH,
-            }.into());
+            }
+            .into());
         }
         let mut bits: [u8; 32] = [0u8; 32];
         bits.copy_from_slice(&bytes[..32]);
@@ -173,6 +175,34 @@ impl SecretKey {
         csprng.fill_bytes(&mut sk.0);
 
         sk
+    }
+
+    /// Sign a message with this `SecretKey`.
+    #[allow(non_snake_case)]
+    pub fn sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        // let clock = quanta::Clock::new();
+        // let t0 = clock.raw();
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
+        let private_key: [u8; SECRET_KEY_LENGTH] = *self.as_bytes();
+        let mut signature = inst.eddsa_sign_msg(&private_key, &h);
+        while let Err(e) = signature {
+            match e {
+                qat_shim::qat::Status::Retry => {
+                    let expanded_secret_key: ExpandedSecretKey = ExpandedSecretKey::from(self);
+                    signature = Ok(expanded_secret_key.sw_sign(&h, public_key).into());
+                }
+                _ => panic!("eddsa_sign_msg failed: {:?}", e),
+            }
+        }
+        let signature = signature.unwrap();
+        let eddsa_sig = ed25519::Signature::from_bytes(&signature)
+            .expect("Failed to convert signature bytes to ed25519 signature");
+        // let t3 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t3);
+        // println!("total sign elapsed: {} ns", ns);
+        eddsa_sig
     }
 }
 
@@ -264,7 +294,7 @@ impl<'a> From<&'a SecretKey> for ExpandedSecretKey {
     /// ```
     fn from(secret_key: &'a SecretKey) -> ExpandedSecretKey {
         let mut h: Sha512 = Sha512::default();
-        let mut hash:  [u8; 64] = [0u8; 64];
+        let mut hash: [u8; 64] = [0u8; 64];
         let mut lower: [u8; 32] = [0u8; 32];
         let mut upper: [u8; 32] = [0u8; 32];
 
@@ -274,11 +304,14 @@ impl<'a> From<&'a SecretKey> for ExpandedSecretKey {
         lower.copy_from_slice(&hash[00..32]);
         upper.copy_from_slice(&hash[32..64]);
 
-        lower[0]  &= 248;
-        lower[31] &=  63;
-        lower[31] |=  64;
+        lower[0] &= 248;
+        lower[31] &= 63;
+        lower[31] |= 64;
 
-        ExpandedSecretKey{ key: Scalar::from_bits(lower), nonce: upper, }
+        ExpandedSecretKey {
+            key: Scalar::from_bits(lower),
+            nonce: upper,
+        }
     }
 }
 
@@ -371,7 +404,8 @@ impl ExpandedSecretKey {
             return Err(InternalError::BytesLengthError {
                 name: "ExpandedSecretKey",
                 length: EXPANDED_SECRET_KEY_LENGTH,
-            }.into());
+            }
+            .into());
         }
         let mut lower: [u8; 32] = [0u8; 32];
         let mut upper: [u8; 32] = [0u8; 32];
@@ -385,9 +419,10 @@ impl ExpandedSecretKey {
         })
     }
 
-    /// Sign a message with this `ExpandedSecretKey`.
-    #[allow(non_snake_case)]
-    pub fn sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+    #[allow(non_snake_case, dead_code)]
+    fn sw_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        let clock = quanta::Clock::new();
+        let t0 = clock.raw();
         let mut h: Sha512 = Sha512::new();
         let R: CompressedEdwardsY;
         let r: Scalar;
@@ -399,6 +434,9 @@ impl ExpandedSecretKey {
 
         r = Scalar::from_hash(h);
         R = (&r * &constants::ED25519_BASEPOINT_TABLE).compress();
+        // let t1 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t1);
+        // println!("r * B elapsed: {} ns", ns);
 
         h = Sha512::new();
         h.update(R.as_bytes());
@@ -406,9 +444,42 @@ impl ExpandedSecretKey {
         h.update(&message);
 
         k = Scalar::from_hash(h);
+        // let t2 = clock.raw();
         s = &(&k * &self.key) + &r;
-
+        // let t3 = clock.raw();
+        // let ns = clock.delta_as_nanos(t2, t3);
+        // println!("k * key + r elapsed: {} ns", ns);
+        let t3 = clock.raw();
+        let ns = clock.delta_as_nanos(t0, t3);
+        println!("total sign elapsed: {} ns", ns);
         InternalSignature { R, s }.into()
+    }
+
+    /// Sign a message with this `ExpandedSecretKey`.
+    #[allow(non_snake_case)]
+    pub fn sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        // let clock = quanta::Clock::new();
+        // let t0 = clock.raw();
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
+        let private_key: [u8; SECRET_KEY_LENGTH] = *self.key.as_bytes();
+        let mut signature = inst.eddsa_sign_msg(&private_key, &h);
+        while let Err(e) = signature {
+            match e {
+                qat_shim::qat::Status::Retry => {
+                    signature = Ok(self.sw_sign(&h, public_key).into());
+                }
+                _ => panic!("eddsa_sign_msg failed: {:?}", e),
+            }
+        }
+        let signature = signature.unwrap();
+        let eddsa_sig = ed25519::Signature::from_bytes(&signature)
+            .expect("Failed to convert signature bytes to ed25519 signature");
+        // let t3 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t3);
+        // println!("total sign elapsed: {} ns", ns);
+        eddsa_sig
     }
 
     /// Sign a `prehashed_message` with this `ExpandedSecretKey` using the
@@ -451,7 +522,9 @@ impl ExpandedSecretKey {
         let ctx: &[u8] = context.unwrap_or(b""); // By default, the context is an empty string.
 
         if ctx.len() > 255 {
-            return Err(SignatureError::from(InternalError::PrehashedContextLengthError));
+            return Err(SignatureError::from(
+                InternalError::PrehashedContextLengthError,
+            ));
         }
 
         let ctx_len: u8 = ctx.len() as u8;
@@ -528,7 +601,8 @@ mod test {
     fn secret_key_zeroize_on_drop() {
         let secret_ptr: *const u8;
 
-        { // scope for the secret to ensure it's been dropped
+        {
+            // scope for the secret to ensure it's been dropped
             let secret = SecretKey::from_bytes(&[0x15u8; 32][..]).unwrap();
 
             secret_ptr = secret.0.as_ptr();

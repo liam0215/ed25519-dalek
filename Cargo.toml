@@ -31,6 +31,8 @@ serde_crate = { package = "serde", version = "1.0", default-features = false, op
 serde_bytes = { version = "0.11", optional = true }
 sha2 = { version = "0.9", default-features = false }
 zeroize = { version = "1", default-features = false, features = ["zeroize_derive"] }
+quanta = "0.12"
+qat-shim = { path = "/data/liam/qat-shim" }
 
 [dev-dependencies]
 hex = "^0.4"

@@ -18,6 +18,7 @@ use curve25519_dalek::digest::Digest;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::edwards::EdwardsPoint;
 use curve25519_dalek::scalar::Scalar;
+use std::sync::mpsc::{channel, TryRecvError};
 
 use ed25519::signature::Verifier;
 
@@ -28,7 +29,7 @@ use serde::de::Error as SerdeError;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[cfg(feature = "serde")]
-use serde_bytes::{Bytes as SerdeBytes, ByteBuf as SerdeByteBuf};
+use serde_bytes::{ByteBuf as SerdeByteBuf, Bytes as SerdeBytes};
 
 use crate::constants::*;
 use crate::errors::*;
@@ -131,7 +132,8 @@ impl PublicKey {
             return Err(InternalError::BytesLengthError {
                 name: "PublicKey",
                 length: PUBLIC_KEY_LENGTH,
-            }.into());
+            }
+            .into());
         }
         let mut bits: [u8; 32] = [0u8; 32];
         bits.copy_from_slice(&bytes[..32]);
@@ -195,7 +197,10 @@ impl PublicKey {
         let k: Scalar;
 
         let ctx: &[u8] = context.unwrap_or(b"");
-        debug_assert!(ctx.len() <= 255, "The context must not be longer than 255 octets.");
+        debug_assert!(
+            ctx.len() <= 255,
+            "The context must not be longer than 255 octets."
+        );
 
         let minus_A: EdwardsPoint = -self.1;
 
@@ -284,8 +289,37 @@ impl PublicKey {
         &self,
         message: &[u8],
         signature: &ed25519::Signature,
-    ) -> Result<(), SignatureError>
-    {
+    ) -> Result<(), SignatureError> {
+        // let clock = quanta::Clock::new();
+        // let t0 = clock.raw();
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
+        let mut valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
+        while let Err(e) = valid {
+            match e {
+                qat_shim::qat::Status::Retry => {
+                    valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
+                }
+                _ => break,
+            }
+        }
+        if valid.is_err() {
+            println!("Error: {:?}", valid);
+            return self.sw_verify_strict(&h, &signature);
+        }
+        // let t1 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t1);
+        // println!("Fast path elapsed: {} ns", ns);
+        valid.map_err(|_| InternalError::VerifyError.into())
+    }
+
+    #[allow(non_snake_case, missing_docs)]
+    pub fn sw_verify_strict(
+        &self,
+        message: &[u8],
+        signature: &ed25519::Signature,
+    ) -> Result<(), SignatureError> {
         let signature = InternalSignature::try_from(signature)?;
 
         let mut h: Sha512 = Sha512::new();
@@ -309,7 +343,12 @@ impl PublicKey {
         h.update(&message);
 
         k = Scalar::from_hash(h);
+        let clock = quanta::Clock::new();
+        let t0 = clock.raw();
         R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
+        let t1 = clock.raw();
+        let ns = clock.delta_as_nanos(t0, t1);
+        println!("Fast path elapsed: {} ns", ns);
 
         if R == signature_R {
             Ok(())
@@ -326,31 +365,43 @@ impl Verifier<ed25519::Signature> for PublicKey {
     ///
     /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
     #[allow(non_snake_case)]
-    fn verify(
-        &self,
-        message: &[u8],
-        signature: &ed25519::Signature
-    ) -> Result<(), SignatureError>
-    {
-        let signature = InternalSignature::try_from(signature)?;
-
-        let mut h: Sha512 = Sha512::new();
-        let R: EdwardsPoint;
-        let k: Scalar;
-        let minus_A: EdwardsPoint = -self.1;
-
-        h.update(signature.R.as_bytes());
-        h.update(self.as_bytes());
-        h.update(&message);
-
-        k = Scalar::from_hash(h);
-        R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
-
-        if R.compress() == signature.R {
-            Ok(())
-        } else {
-            Err(InternalError::VerifyError.into())
+    fn verify(&self, message: &[u8], signature: &ed25519::Signature) -> Result<(), SignatureError> {
+        // let signature = InternalSignature::try_from(signature)?;
+        //
+        // let mut h: Sha512 = Sha512::new();
+        // let R: EdwardsPoint;
+        // let k: Scalar;
+        // let minus_A: EdwardsPoint = -self.1;
+        //
+        // h.update(signature.R.as_bytes());
+        // h.update(self.as_bytes());
+        // h.update(&message);
+        //
+        // k = Scalar::from_hash(h);
+        // R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
+        //
+        // if R.compress() == signature.R {
+        //     Ok(())
+        // } else {
+        //     Err(InternalError::VerifyError.into())
+        // }
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
+        let mut valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
+        while let Err(e) = valid {
+            match e {
+                qat_shim::qat::Status::Retry => {
+                    valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
+                }
+                _ => break,
+            }
         }
+        if valid.is_err() {
+            println!("Error: {:?}", valid);
+            return self.sw_verify_strict(&h, &signature);
+        }
+        valid.map_err(|_| InternalError::VerifyError.into())
     }
 }
 
