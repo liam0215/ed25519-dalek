@@ -16,7 +16,6 @@ use curve25519_dalek::digest::generic_array::typenum::U64;
 use curve25519_dalek::digest::Digest;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::scalar::Scalar;
-use std::sync::mpsc::{channel, TryRecvError};
 
 #[cfg(feature = "rand")]
 use rand::{CryptoRng, RngCore};
@@ -179,9 +178,7 @@ impl SecretKey {
 
     /// Sign a message with this `SecretKey`.
     #[allow(non_snake_case)]
-    pub fn sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
-        // let clock = quanta::Clock::new();
-        // let t0 = clock.raw();
+    pub fn hw_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
         let inst: qat_shim::qat::Instance =
             qat_shim::qat::get_first_instance().expect("failed to get first instance");
         let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
@@ -199,9 +196,6 @@ impl SecretKey {
         let signature = signature.unwrap();
         let eddsa_sig = ed25519::Signature::from_bytes(&signature)
             .expect("Failed to convert signature bytes to ed25519 signature");
-        // let t3 = clock.raw();
-        // let ns = clock.delta_as_nanos(t0, t3);
-        // println!("total sign elapsed: {} ns", ns);
         eddsa_sig
     }
 }
@@ -419,10 +413,55 @@ impl ExpandedSecretKey {
         })
     }
 
+    /// Sign a message with this `ExpandedSecretKey`.
     #[allow(non_snake_case, dead_code)]
-    fn sw_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
-        let clock = quanta::Clock::new();
-        let t0 = clock.raw();
+    pub fn qat_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let mut h: Sha512 = Sha512::new();
+        let R: CompressedEdwardsY;
+        let r: Scalar;
+        let s: Scalar;
+        let k: Scalar;
+
+        h.update(&self.nonce);
+        h.update(&message);
+
+        r = Scalar::from_hash(h);
+        let Bx = [
+            0x1A, 0xD5, 0x25, 0x8F, 0x60, 0x2D, 0x56, 0xC9, 0xB2, 0xA7, 0x25, 0x95, 0x60, 0xC7,
+            0x2C, 0x69, 0x5C, 0xDC, 0xD6, 0xFD, 0x31, 0xE2, 0xA4, 0xC0, 0xFE, 0x53, 0x6E, 0xCD,
+            0xD3, 0x36, 0x69, 0x21,
+        ];
+        let By = [
+            0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66,
+        ];
+        R = match inst.point_multiplication(&Bx, &By, &r.to_bytes()) {
+            Ok(point) => CompressedEdwardsY::from_slice(&point),
+            Err(_) => {
+                // println!("point_multiplication failed, falling back to software");
+                (&r * &constants::ED25519_BASEPOINT_TABLE).compress()
+                // panic!("point_multiplication failed");
+            }
+        };
+
+        h = Sha512::new();
+        h.update(R.as_bytes());
+        h.update(public_key.as_bytes());
+        h.update(&message);
+
+        k = Scalar::from_hash(h);
+        s = &(&k * &self.key) + &r;
+        InternalSignature { R, s }.into()
+    }
+
+    /// Sign a message with this `ExpandedSecretKey`.
+    #[allow(non_snake_case, dead_code)]
+    pub fn sw_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        // let clock = quanta::Clock::new();
+        // let t0 = clock.raw();
         let mut h: Sha512 = Sha512::new();
         let R: CompressedEdwardsY;
         let r: Scalar;
@@ -449,15 +488,20 @@ impl ExpandedSecretKey {
         // let t3 = clock.raw();
         // let ns = clock.delta_as_nanos(t2, t3);
         // println!("k * key + r elapsed: {} ns", ns);
-        let t3 = clock.raw();
-        let ns = clock.delta_as_nanos(t0, t3);
-        println!("total sign elapsed: {} ns", ns);
+        // let t3 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t3);
+        // println!("total sign elapsed: {} ns", ns);
         InternalSignature { R, s }.into()
     }
 
     /// Sign a message with this `ExpandedSecretKey`.
-    #[allow(non_snake_case)]
     pub fn sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
+        self.sw_sign(message, public_key)
+    }
+
+    /// Sign a message with this `ExpandedSecretKey`.
+    #[allow(non_snake_case, dead_code)]
+    fn hw_sign(&self, message: &[u8], public_key: &PublicKey) -> ed25519::Signature {
         // let clock = quanta::Clock::new();
         // let t0 = clock.raw();
         let inst: qat_shim::qat::Instance =

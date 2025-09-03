@@ -416,9 +416,9 @@ impl Keypair {
 impl Signer<ed25519::Signature> for Keypair {
     /// Sign a message with this keypair's secret key.
     fn try_sign(&self, message: &[u8]) -> Result<ed25519::Signature, SignatureError> {
-        // let expanded: ExpandedSecretKey = (&self.secret).into();
-        // Ok(expanded.sign(&message, &self.public).into())
-        Ok(self.secret.sign(message, &self.public).into())
+        let expanded: ExpandedSecretKey = (&self.secret).into();
+        Ok(expanded.sign(&message, &self.public).into())
+        // Ok(self.secret.sign(message, &self.public).into())
     }
 }
 

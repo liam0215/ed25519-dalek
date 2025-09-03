@@ -207,15 +207,15 @@ mod integrations {
         bad_sig = keypair.sign(&bad);
 
         assert!(
-            keypair.verify_strict(&good, &good_sig).is_ok(),
+            keypair.verify(&good, &good_sig).is_ok(),
             "Verification of a valid signature failed!"
         );
         assert!(
-            keypair.verify_strict(&good, &bad_sig).is_err(),
+            keypair.verify(&good, &bad_sig).is_err(),
             "Verification of a signature on a different message passed!"
         );
         assert!(
-            keypair.verify_strict(&bad, &good_sig).is_err(),
+            keypair.verify(&bad, &good_sig).is_err(),
             "Verification of a signature on a different message passed!"
         );
         if let Some(tx) = tx {

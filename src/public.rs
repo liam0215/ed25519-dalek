@@ -18,7 +18,6 @@ use curve25519_dalek::digest::Digest;
 use curve25519_dalek::edwards::CompressedEdwardsY;
 use curve25519_dalek::edwards::EdwardsPoint;
 use curve25519_dalek::scalar::Scalar;
-use std::sync::mpsc::{channel, TryRecvError};
 
 use ed25519::signature::Verifier;
 
@@ -64,7 +63,20 @@ impl<'a> From<&'a SecretKey> for PublicKey {
 
         digest.copy_from_slice(&hash[..32]);
 
-        PublicKey::mangle_scalar_bits_and_multiply_by_basepoint_to_produce_public_key(&mut digest)
+        let pk = PublicKey::mangle_scalar_bits_and_multiply_by_basepoint_to_produce_public_key(
+            &mut digest,
+        );
+
+        // let inst: qat_shim::qat::Instance =
+        //     qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        //
+        // let pk_qat = inst
+        //     .eddsa_gen_public_key(&secret_key.to_bytes())
+        //     .expect("QAT keygen failed");
+        // println!("PK QAT: {:?}", pk_qat);
+        // println!("PK DAL: {:?}", pk.to_bytes());
+
+        pk
     }
 }
 
@@ -159,7 +171,11 @@ impl PublicKey {
         let point = &Scalar::from_bits(*bits) * &constants::ED25519_BASEPOINT_TABLE;
         let compressed = point.compress();
 
-        PublicKey(compressed, point)
+        PublicKey(
+            compressed,
+            compressed.decompress().expect("Decompression failed"),
+        )
+        // PublicKey(compressed, point)
     }
 
     /// Verify a `signature` on a `prehashed_message` using the Ed25519ph algorithm.
@@ -290,6 +306,87 @@ impl PublicKey {
         message: &[u8],
         signature: &ed25519::Signature,
     ) -> Result<(), SignatureError> {
+        // let qat = self.qat_verify_strict(message, signature);
+        // let sw = self.sw_verify_strict(message, signature);
+        // if qat.is_ok() && sw.is_ok() {
+        //     Ok(())
+        // } else if qat.is_ok() || sw.is_ok() {
+        //     println!("Warning: One of software or QAT verification failed!");
+        //     panic!("QAT: {:?}, SW: {:?}", qat, sw);
+        // } else {
+        //     sw
+        // }
+        self.qat_verify_strict(message, signature)
+    }
+
+    /// Strictly verify a signature on a message with this keypair's public key.
+    ///
+    /// # On The (Multiple) Sources of Malleability in Ed25519 Signatures
+    ///
+    /// This version of verification is technically non-RFC8032 compliant.  The
+    /// following explains why.
+    ///
+    /// 1. Scalar Malleability
+    ///
+    /// The authors of the RFC explicitly stated that verification of an ed25519
+    /// signature must fail if the scalar `s` is not properly reduced mod \ell:
+    ///
+    /// > To verify a signature on a message M using public key A, with F
+    /// > being 0 for Ed25519ctx, 1 for Ed25519ph, and if Ed25519ctx or
+    /// > Ed25519ph is being used, C being the context, first split the
+    /// > signature into two 32-octet halves.  Decode the first half as a
+    /// > point R, and the second half as an integer S, in the range
+    /// > 0 <= s < L.  Decode the public key A as point A'.  If any of the
+    /// > decodings fail (including S being out of range), the signature is
+    /// > invalid.)
+    ///
+    /// All `verify_*()` functions within ed25519-dalek perform this check.
+    ///
+    /// 2. Point malleability
+    ///
+    /// The authors of the RFC added in a malleability check to step #3 in
+    /// §5.1.7, for small torsion components in the `R` value of the signature,
+    /// *which is not strictly required*, as they state:
+    ///
+    /// > Check the group equation \[8\]\[S\]B = \[8\]R + \[8\]\[k\]A'.  It's
+    /// > sufficient, but not required, to instead check \[S\]B = R + \[k\]A'.
+    ///
+    /// # History of Malleability Checks
+    ///
+    /// As originally defined (cf. the "Malleability" section in the README of
+    /// this repo), ed25519 signatures didn't consider *any* form of
+    /// malleability to be an issue.  Later the scalar malleability was
+    /// considered important.  Still later, particularly with interests in
+    /// cryptocurrency design and in unique identities (e.g. for Signal users,
+    /// Tor onion services, etc.), the group element malleability became a
+    /// concern.
+    ///
+    /// However, libraries had already been created to conform to the original
+    /// definition.  One well-used library in particular even implemented the
+    /// group element malleability check, *but only for batch verification*!
+    /// Which meant that even using the same library, a single signature could
+    /// verify fine individually, but suddenly, when verifying it with a bunch
+    /// of other signatures, the whole batch would fail!
+    ///
+    /// # "Strict" Verification
+    ///
+    /// This method performs *both* of the above signature malleability checks.
+    ///
+    /// It must be done as a separate method because one doesn't simply get to
+    /// change the definition of a cryptographic primitive ten years
+    /// after-the-fact with zero consideration for backwards compatibility in
+    /// hardware and protocols which have it already have the older definition
+    /// baked in.
+    ///
+    /// # Return
+    ///
+    /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
+    #[allow(non_snake_case)]
+    pub fn hw_verify_strict(
+        &self,
+        message: &[u8],
+        signature: &ed25519::Signature,
+    ) -> Result<(), SignatureError> {
         // let clock = quanta::Clock::new();
         // let t0 = clock.raw();
         let inst: qat_shim::qat::Instance =
@@ -314,6 +411,200 @@ impl PublicKey {
         valid.map_err(|_| InternalError::VerifyError.into())
     }
 
+    /// Strictly verify a signature on a message with this keypair's public key.
+    ///
+    /// # On The (Multiple) Sources of Malleability in Ed25519 Signatures
+    ///
+    /// This version of verification is technically non-RFC8032 compliant.  The
+    /// following explains why.
+    ///
+    /// 1. Scalar Malleability
+    ///
+    /// The authors of the RFC explicitly stated that verification of an ed25519
+    /// signature must fail if the scalar `s` is not properly reduced mod \ell:
+    ///
+    /// > To verify a signature on a message M using public key A, with F
+    /// > being 0 for Ed25519ctx, 1 for Ed25519ph, and if Ed25519ctx or
+    /// > Ed25519ph is being used, C being the context, first split the
+    /// > signature into two 32-octet halves.  Decode the first half as a
+    /// > point R, and the second half as an integer S, in the range
+    /// > 0 <= s < L.  Decode the public key A as point A'.  If any of the
+    /// > decodings fail (including S being out of range), the signature is
+    /// > invalid.)
+    ///
+    /// All `verify_*()` functions within ed25519-dalek perform this check.
+    ///
+    /// 2. Point malleability
+    ///
+    /// The authors of the RFC added in a malleability check to step #3 in
+    /// §5.1.7, for small torsion components in the `R` value of the signature,
+    /// *which is not strictly required*, as they state:
+    ///
+    /// > Check the group equation \[8\]\[S\]B = \[8\]R + \[8\]\[k\]A'.  It's
+    /// > sufficient, but not required, to instead check \[S\]B = R + \[k\]A'.
+    ///
+    /// # History of Malleability Checks
+    ///
+    /// As originally defined (cf. the "Malleability" section in the README of
+    /// this repo), ed25519 signatures didn't consider *any* form of
+    /// malleability to be an issue.  Later the scalar malleability was
+    /// considered important.  Still later, particularly with interests in
+    /// cryptocurrency design and in unique identities (e.g. for Signal users,
+    /// Tor onion services, etc.), the group element malleability became a
+    /// concern.
+    ///
+    /// However, libraries had already been created to conform to the original
+    /// definition.  One well-used library in particular even implemented the
+    /// group element malleability check, *but only for batch verification*!
+    /// Which meant that even using the same library, a single signature could
+    /// verify fine individually, but suddenly, when verifying it with a bunch
+    /// of other signatures, the whole batch would fail!
+    ///
+    /// # "Strict" Verification
+    ///
+    /// This method performs *both* of the above signature malleability checks.
+    ///
+    /// It must be done as a separate method because one doesn't simply get to
+    /// change the definition of a cryptographic primitive ten years
+    /// after-the-fact with zero consideration for backwards compatibility in
+    /// hardware and protocols which have it already have the older definition
+    /// baked in.
+    ///
+    /// # Return
+    ///
+    /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
+    #[allow(non_snake_case, missing_docs)]
+    pub fn qat_verify_strict(
+        &self,
+        message: &[u8],
+        signature: &ed25519::Signature,
+    ) -> Result<(), SignatureError> {
+        let inst: qat_shim::qat::Instance =
+            qat_shim::qat::get_first_instance().expect("failed to get first instance");
+        let signature = InternalSignature::try_from(signature)?;
+
+        let mut h: Sha512 = Sha512::new();
+        let R: EdwardsPoint;
+        let k: Scalar;
+        let minus_A: EdwardsPoint = -self.1;
+        let signature_R: EdwardsPoint;
+
+        match signature.R.decompress() {
+            None => return Err(InternalError::VerifyError.into()),
+            Some(x) => signature_R = x,
+        }
+
+        // Logical OR is fine here as we're not trying to be constant time.
+        if signature_R.is_small_order() || self.1.is_small_order() {
+            return Err(InternalError::VerifyError.into());
+        }
+
+        h.update(signature.R.as_bytes());
+        h.update(self.as_bytes());
+        h.update(&message);
+
+        k = Scalar::from_hash(h);
+        // let Bx = [
+        //     0x1A, 0xD5, 0x25, 0x8F, 0x60, 0x2D, 0x56, 0xC9, 0xB2, 0xA7, 0x25, 0x95, 0x60, 0xC7,
+        //     0x2C, 0x69, 0x5C, 0xDC, 0xD6, 0xFD, 0x31, 0xE2, 0xA4, 0xC0, 0xFE, 0x53, 0x6E, 0xCD,
+        //     0xD3, 0x36, 0x69, 0x21,
+        // ];
+        // let By = [
+        //     0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        //     0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        //     0x66, 0x66, 0x66, 0x66,
+        // ];
+        let minus_Ax = minus_A.X.to_bytes();
+        let minus_Ay = minus_A.Y.to_bytes();
+        let k_minus_A = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.reduce().to_bytes());
+        let k_minus_A = k_minus_A
+            .map(|point| CompressedEdwardsY::from_slice(&point))
+            .map(|point| point.decompress());
+        // let sB = inst
+        //     .point_multiplication(&Bx, &By, &signature.s.to_bytes())
+        //     .map(|point| CompressedEdwardsY::from_slice(&point))
+        //     .map(|point| point.decompress());
+        let sB = Ok(Some(&signature.s * &constants::ED25519_BASEPOINT_TABLE));
+        R = match (k_minus_A, sB) {
+            (Ok(Some(kA)), Ok(Some(sB))) => sB + kA,
+            (Err(e), _) | (_, Err(e)) => match e {
+                qat_shim::qat::Status::Retry => {
+                    EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s)
+                }
+                _ => return Err(InternalError::VerifyError.into()),
+            },
+            _ => return Err(InternalError::VerifyError.into()),
+        };
+
+        if R.compress() == signature.R {
+            Ok(())
+        } else {
+            Err(InternalError::VerifyError.into())
+        }
+    }
+
+    /// Strictly verify a signature on a message with this keypair's public key.
+    ///
+    /// # On The (Multiple) Sources of Malleability in Ed25519 Signatures
+    ///
+    /// This version of verification is technically non-RFC8032 compliant.  The
+    /// following explains why.
+    ///
+    /// 1. Scalar Malleability
+    ///
+    /// The authors of the RFC explicitly stated that verification of an ed25519
+    /// signature must fail if the scalar `s` is not properly reduced mod \ell:
+    ///
+    /// > To verify a signature on a message M using public key A, with F
+    /// > being 0 for Ed25519ctx, 1 for Ed25519ph, and if Ed25519ctx or
+    /// > Ed25519ph is being used, C being the context, first split the
+    /// > signature into two 32-octet halves.  Decode the first half as a
+    /// > point R, and the second half as an integer S, in the range
+    /// > 0 <= s < L.  Decode the public key A as point A'.  If any of the
+    /// > decodings fail (including S being out of range), the signature is
+    /// > invalid.)
+    ///
+    /// All `verify_*()` functions within ed25519-dalek perform this check.
+    ///
+    /// 2. Point malleability
+    ///
+    /// The authors of the RFC added in a malleability check to step #3 in
+    /// §5.1.7, for small torsion components in the `R` value of the signature,
+    /// *which is not strictly required*, as they state:
+    ///
+    /// > Check the group equation \[8\]\[S\]B = \[8\]R + \[8\]\[k\]A'.  It's
+    /// > sufficient, but not required, to instead check \[S\]B = R + \[k\]A'.
+    ///
+    /// # History of Malleability Checks
+    ///
+    /// As originally defined (cf. the "Malleability" section in the README of
+    /// this repo), ed25519 signatures didn't consider *any* form of
+    /// malleability to be an issue.  Later the scalar malleability was
+    /// considered important.  Still later, particularly with interests in
+    /// cryptocurrency design and in unique identities (e.g. for Signal users,
+    /// Tor onion services, etc.), the group element malleability became a
+    /// concern.
+    ///
+    /// However, libraries had already been created to conform to the original
+    /// definition.  One well-used library in particular even implemented the
+    /// group element malleability check, *but only for batch verification*!
+    /// Which meant that even using the same library, a single signature could
+    /// verify fine individually, but suddenly, when verifying it with a bunch
+    /// of other signatures, the whole batch would fail!
+    ///
+    /// # "Strict" Verification
+    ///
+    /// This method performs *both* of the above signature malleability checks.
+    ///
+    /// It must be done as a separate method because one doesn't simply get to
+    /// change the definition of a cryptographic primitive ten years
+    /// after-the-fact with zero consideration for backwards compatibility in
+    /// hardware and protocols which have it already have the older definition
+    /// baked in.
+    ///
+    /// # Return
+    ///
+    /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
     #[allow(non_snake_case, missing_docs)]
     pub fn sw_verify_strict(
         &self,
@@ -343,12 +634,12 @@ impl PublicKey {
         h.update(&message);
 
         k = Scalar::from_hash(h);
-        let clock = quanta::Clock::new();
-        let t0 = clock.raw();
+        // let clock = quanta::Clock::new();
+        // let t0 = clock.raw();
         R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
-        let t1 = clock.raw();
-        let ns = clock.delta_as_nanos(t0, t1);
-        println!("Fast path elapsed: {} ns", ns);
+        // let t1 = clock.raw();
+        // let ns = clock.delta_as_nanos(t0, t1);
+        // println!("Fast path elapsed: {} ns", ns);
 
         if R == signature_R {
             Ok(())
@@ -366,42 +657,58 @@ impl Verifier<ed25519::Signature> for PublicKey {
     /// Returns `Ok(())` if the signature is valid, and `Err` otherwise.
     #[allow(non_snake_case)]
     fn verify(&self, message: &[u8], signature: &ed25519::Signature) -> Result<(), SignatureError> {
-        // let signature = InternalSignature::try_from(signature)?;
-        //
-        // let mut h: Sha512 = Sha512::new();
-        // let R: EdwardsPoint;
-        // let k: Scalar;
-        // let minus_A: EdwardsPoint = -self.1;
-        //
-        // h.update(signature.R.as_bytes());
-        // h.update(self.as_bytes());
-        // h.update(&message);
-        //
-        // k = Scalar::from_hash(h);
-        // R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
-        //
-        // if R.compress() == signature.R {
-        //     Ok(())
-        // } else {
-        //     Err(InternalError::VerifyError.into())
-        // }
         let inst: qat_shim::qat::Instance =
             qat_shim::qat::get_first_instance().expect("failed to get first instance");
-        let h = qat_shim::qat::hash_sha512(&message).expect("hash_sha512 failed");
-        let mut valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
-        while let Err(e) = valid {
-            match e {
+        let signature = InternalSignature::try_from(signature)?;
+
+        let mut h: Sha512 = Sha512::new();
+        let R: EdwardsPoint;
+        let k: Scalar;
+        let minus_A: EdwardsPoint = -self.1;
+
+        h.update(signature.R.as_bytes());
+        h.update(self.as_bytes());
+        h.update(&message);
+
+        k = Scalar::from_hash(h);
+        // let Bx = [
+        //     0x1A, 0xD5, 0x25, 0x8F, 0x60, 0x2D, 0x56, 0xC9, 0xB2, 0xA7, 0x25, 0x95, 0x60, 0xC7,
+        //     0x2C, 0x69, 0x5C, 0xDC, 0xD6, 0xFD, 0x31, 0xE2, 0xA4, 0xC0, 0xFE, 0x53, 0x6E, 0xCD,
+        //     0xD3, 0x36, 0x69, 0x21,
+        // ];
+        // let By = [
+        //     0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        //     0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+        //     0x66, 0x66, 0x66, 0x66,
+        // ];
+        let minus_Ax = minus_A.X.to_bytes();
+        let minus_Ay = minus_A.Y.to_bytes();
+        let k_minus_A = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.to_bytes());
+        let k_minus_A = k_minus_A
+            .map(|point| CompressedEdwardsY::from_slice(&point))
+            .map(|point| point.decompress());
+        let sB = Ok(Some(&signature.s * &constants::ED25519_BASEPOINT_TABLE));
+        // let sB = inst
+        //     .point_multiplication(&Bx, &By, &signature.s.to_bytes())
+        //     .map(|point| CompressedEdwardsY::from_slice(&point))
+        //     .map(|point| point.decompress());
+        R = match (k_minus_A, sB) {
+            (Ok(Some(kA)), Ok(Some(sB))) => sB + kA,
+            (Err(e), _) | (_, Err(e)) => match e {
                 qat_shim::qat::Status::Retry => {
-                    valid = inst.eddsa_verify_msg(&self.to_bytes(), &h, &signature.to_bytes());
+                    EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s)
                 }
-                _ => break,
-            }
+                _ => return Err(InternalError::VerifyError.into()),
+            },
+            _ => return Err(InternalError::VerifyError.into()),
+        };
+        // R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
+
+        if R.compress() == signature.R {
+            Ok(())
+        } else {
+            Err(InternalError::VerifyError.into())
         }
-        if valid.is_err() {
-            println!("Error: {:?}", valid);
-            return self.sw_verify_strict(&h, &signature);
-        }
-        valid.map_err(|_| InternalError::VerifyError.into())
     }
 }
 
