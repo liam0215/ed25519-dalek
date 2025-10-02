@@ -1,0 +1,49 @@
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+running 5 tests
+test integrations::ed25519ph_sign_verify ... ok
+test integrations::pubkey_from_secret_and_expanded_secret ... ok
+test integrations::sign_verify ... ok
+test vectors::against_reference_implementation ... ok
+test vectors::ed25519ph_rf8032_test_vector ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 12.69s
+
+
+running 20 tests
+test src/keypair.rs - keypair::Keypair::generate (line 101) ... ok
+test src/keypair.rs - keypair::Keypair::sign_prehashed (line 162) ... ok
+test src/keypair.rs - keypair::Keypair::sign_prehashed (line 209) ... ok
+test src/keypair.rs - keypair::Keypair::verify_prehashed (line 287) ... ok
+test src/lib.rs - (line 103) ... FAILED
+test src/lib.rs - (line 125) ... FAILED
+test src/lib.rs - (line 167) ... ok
+test src/lib.rs - (line 197) ... ok
+test src/lib.rs - (line 21) ... ok
+test src/lib.rs - (line 41) ... FAILED
+test src/lib.rs - (line 58) ... FAILED
+test src/lib.rs - (line 76) ... FAILED
+test src/public.rs - public::PublicKey::from_bytes (line 115) ... ok
+test src/secret.rs - secret::ExpandedSecretKey::from (line 274) ... ok
+test src/secret.rs - secret::ExpandedSecretKey::from_bytes (line 363) ... ok
+test src/secret.rs - secret::ExpandedSecretKey::to_bytes (line 323) ... ok
+test src/secret.rs - secret::SecretKey::from_bytes (line 76) ... ok
+test src/secret.rs - secret::SecretKey::generate (line 124) ... ok
+test src/secret.rs - secret::SecretKey::generate (line 146) ... ok
+test src/signature.rs - signature::InternalSignature::from_bytes (line 127) ... ignored
+
+failures:
+
+failures:
+    src/lib.rs - (line 103)
+    src/lib.rs - (line 125)
+    src/lib.rs - (line 41)
+    src/lib.rs - (line 58)
+    src/lib.rs - (line 76)
+
+test result: FAILED. 14 passed; 5 failed; 1 ignored; 0 measured; 0 filtered out; finished in 4.92s
+

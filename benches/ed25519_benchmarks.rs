@@ -108,18 +108,18 @@ mod ed25519_benches {
         inst.set_address_translation()
             .expect("set address translation failed");
         inst.start().expect("start instance failed");
-        let (tx, poll) = if inst.is_polled().unwrap() {
-            let (tx, rx) = channel();
-            let inst2 = inst.clone();
-            let poll = std::thread::spawn(move || {
-                while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
-                    let _ = inst2.clone().poll_once();
-                }
-            });
-            (Some(tx), Some(poll))
-        } else {
-            (None, None)
-        };
+        // let (tx, poll) = if inst.is_polled().unwrap() {
+        //     let (tx, rx) = channel();
+        //     let inst2 = inst.clone();
+        //     let poll = std::thread::spawn(move || {
+        //         while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
+        //             let _ = inst2.clone().poll_once();
+        //         }
+        //     });
+        //     (Some(tx), Some(poll))
+        // } else {
+        //     (None, None)
+        // };
         let mut csprng: ThreadRng = thread_rng();
         let keypair: Keypair = Keypair::generate(&mut csprng);
         let msg: &[u8] = b"";
@@ -128,11 +128,11 @@ mod ed25519_benches {
         c.bench_function("Ed25519 signature verification", move |b| {
             b.iter(|| keypair.verify(msg, &sig))
         });
-        if let Some(tx) = tx {
-            tx.send(())
-                .expect("Failed to send stop signal to polling thread");
-            poll.unwrap().join().expect("Polling thread panicked");
-        }
+        // if let Some(tx) = tx {
+        //     tx.send(())
+        //         .expect("Failed to send stop signal to polling thread");
+        //     poll.unwrap().join().expect("Polling thread panicked");
+        // }
         qat_shim::qat::stop_session().expect("stop session failed");
         qat_shim::qat::qae_mem_destroy();
     }
@@ -144,18 +144,18 @@ mod ed25519_benches {
         inst.set_address_translation()
             .expect("set address translation failed");
         inst.start().expect("start instance failed");
-        let (tx, poll) = if inst.is_polled().unwrap() {
-            let (tx, rx) = channel();
-            let inst2 = inst.clone();
-            let poll = std::thread::spawn(move || {
-                while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
-                    let _ = inst2.clone().poll_once();
-                }
-            });
-            (Some(tx), Some(poll))
-        } else {
-            (None, None)
-        };
+        // let (tx, poll) = if inst.is_polled().unwrap() {
+        //     let (tx, rx) = channel();
+        //     let inst2 = inst.clone();
+        //     let poll = std::thread::spawn(move || {
+        //         while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
+        //             let _ = inst2.clone().poll_once();
+        //         }
+        //     });
+        //     (Some(tx), Some(poll))
+        // } else {
+        //     (None, None)
+        // };
         let mut csprng: ThreadRng = thread_rng();
         let keypair: Keypair = Keypair::generate(&mut csprng);
         let msg: &[u8] = b"";
@@ -164,11 +164,11 @@ mod ed25519_benches {
         c.bench_function("Ed25519 strict signature verification", move |b| {
             b.iter(|| keypair.verify_strict(msg, &sig))
         });
-        if let Some(tx) = tx {
-            tx.send(())
-                .expect("Failed to send stop signal to polling thread");
-            poll.unwrap().join().expect("Polling thread panicked");
-        }
+        // if let Some(tx) = tx {
+        //     tx.send(())
+        //         .expect("Failed to send stop signal to polling thread");
+        //     poll.unwrap().join().expect("Polling thread panicked");
+        // }
         qat_shim::qat::stop_session().expect("stop session failed");
         qat_shim::qat::qae_mem_destroy();
     }
