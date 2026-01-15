@@ -519,10 +519,18 @@ impl PublicKey {
         // while matches!(status, qat_shim::qat::Status::Retry) {
         let minus_Ax = minus_A.X.to_bytes();
         let minus_Ay = minus_A.Y.to_bytes();
-        let k_minus_A = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.reduce().to_bytes());
-        let k_minus_A = k_minus_A
-            .map(|point| CompressedEdwardsY::from_slice(&point))
-            .map(|point| point.decompress());
+        let k_minus_A = loop {
+            let result = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.reduce().to_bytes());
+            match result {
+                Ok(point) => break point,
+                Err(e) if e == qat_shim::qat::Status::Retry => continue,
+                _ => return Err(InternalError::VerifyError.into()),
+            };
+        };
+        let k_minus_A = CompressedEdwardsY::from_slice(&k_minus_A)
+            .decompress()
+            .unwrap();
+
         //
         //     match k_minus_A {
         //         Ok(Some(kA)) => {
@@ -534,13 +542,14 @@ impl PublicKey {
         //     };
         // }
         // R = maybe_R.unwrap();
-        let R = match k_minus_A {
-            Ok(Some(kA)) => (&signature.s * &constants::ED25519_BASEPOINT_TABLE) + kA,
-            Err(e) if e == qat_shim::qat::Status::Retry => {
-                EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s)
-            }
-            _ => return Err(InternalError::VerifyError.into()),
-        };
+        let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
+        // let R = match k_minus_A {
+        //     Ok(Some(kA)) => (&signature.s * &constants::ED25519_BASEPOINT_TABLE) + kA,
+        //     Err(e) if e == qat_shim::qat::Status::Retry => {
+        //         EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s)
+        //     }
+        //     _ => return Err(InternalError::VerifyError.into()),
+        // };
         // let sB = inst
         //     .point_multiplication(&Bx, &By, &signature.s.to_bytes())
         //     .map(|point| CompressedEdwardsY::from_slice(&point))
