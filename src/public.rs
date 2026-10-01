@@ -317,6 +317,7 @@ impl PublicKey {
         //     sw
         // }
         self.qat_verify_strict(message, signature)
+        // self.sw_verify_strict(message, signature)
     }
 
     /// Strictly verify a signature on a message with this keypair's public key.
@@ -484,7 +485,6 @@ impl PublicKey {
         let signature = InternalSignature::try_from(signature)?;
 
         let mut h: Sha512 = Sha512::new();
-        let R: EdwardsPoint;
         let k: Scalar;
         let minus_A: EdwardsPoint = -self.1;
         let signature_R: EdwardsPoint;
@@ -514,9 +514,6 @@ impl PublicKey {
         //     0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
         //     0x66, 0x66, 0x66, 0x66,
         // ];
-        // let mut status = qat_shim::qat::Status::Retry;
-        // let mut maybe_R: Option<EdwardsPoint> = None;
-        // while matches!(status, qat_shim::qat::Status::Retry) {
         let minus_Ax = minus_A.X.to_bytes();
         let minus_Ay = minus_A.Y.to_bytes();
         let k_minus_A = loop {
@@ -531,6 +528,19 @@ impl PublicKey {
             .decompress()
             .unwrap();
 
+        // let sB = loop {
+        //     let result = inst.point_multiplication(&Bx, &By, &signature.s.reduce().to_bytes());
+        //     match result {
+        //         Ok(point) => break point,
+        //         Err(e) if e == qat_shim::qat::Status::Retry => continue,
+        //         _ => return Err(InternalError::VerifyError.into()),
+        //     }
+        // };
+        // let sB = CompressedEdwardsY::from_slice(&sB).decompress().unwrap();
+        //
+        // let R = k_minus_A + sB;
+        let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
+
         //
         //     match k_minus_A {
         //         Ok(Some(kA)) => {
@@ -542,7 +552,7 @@ impl PublicKey {
         //     };
         // }
         // R = maybe_R.unwrap();
-        let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
+        // let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
         // let R = match k_minus_A {
         //     Ok(Some(kA)) => (&signature.s * &constants::ED25519_BASEPOINT_TABLE) + kA,
         //     Err(e) if e == qat_shim::qat::Status::Retry => {
@@ -669,9 +679,6 @@ impl PublicKey {
         h.update(&message);
 
         k = Scalar::from_hash(h);
-        println!("k: {:?}", k.reduce().to_bytes());
-        println!("minus_A x: {:?}", minus_A.X.to_bytes());
-        println!("minus_A y: {:?}", minus_A.Y.to_bytes());
         // let clock = quanta::Clock::new();
         // let t0 = clock.raw();
         R = EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s);
@@ -700,7 +707,6 @@ impl Verifier<ed25519::Signature> for PublicKey {
         let signature = InternalSignature::try_from(signature)?;
 
         let mut h: Sha512 = Sha512::new();
-        let R: EdwardsPoint;
         let k: Scalar;
         let minus_A: EdwardsPoint = -self.1;
 
@@ -719,32 +725,33 @@ impl Verifier<ed25519::Signature> for PublicKey {
         //     0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
         //     0x66, 0x66, 0x66, 0x66,
         // ];
-        // let mut status = qat_shim::qat::Status::Retry;
-        // let mut maybe_R: Option<EdwardsPoint> = None;
-        // while matches!(status, qat_shim::qat::Status::Retry) {
+        // let sB = loop {
+        //     let result = inst.point_multiplication(&Bx, &By, &signature.s.reduce().to_bytes());
+        //     match result {
+        //         Ok(point) => break point,
+        //         Err(e) if e == qat_shim::qat::Status::Retry => continue,
+        //         _ => return Err(InternalError::VerifyError.into()),
+        //     }
+        // };
+        // let sB = CompressedEdwardsY::from_slice(&sB).decompress().unwrap();
+        //
         let minus_Ax = minus_A.X.to_bytes();
         let minus_Ay = minus_A.Y.to_bytes();
-        let k_minus_A = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.to_bytes());
-        let k_minus_A = k_minus_A
-            .map(|point| CompressedEdwardsY::from_slice(&point))
-            .map(|point| point.decompress());
-        //     match k_minus_A {
-        //         Ok(Some(kA)) => {
-        //             status = qat_shim::qat::Status::Success;
-        //             maybe_R = Some((&signature.s * &constants::ED25519_BASEPOINT_TABLE) + kA)
-        //         }
-        //         Err(e) if e == qat_shim::qat::Status::Retry => {}
-        //         _ => return Err(InternalError::VerifyError.into()),
-        //     };
-        // }
-        // let R = maybe_R.unwrap();
-        R = match k_minus_A {
-            Ok(Some(kA)) => (&signature.s * &constants::ED25519_BASEPOINT_TABLE) + kA,
-            Err(e) if e == qat_shim::qat::Status::Retry => {
-                EdwardsPoint::vartime_double_scalar_mul_basepoint(&k, &(minus_A), &signature.s)
-            }
-            _ => return Err(InternalError::VerifyError.into()),
+        let k_minus_A = loop {
+            let result = inst.point_multiplication(&minus_Ax, &minus_Ay, &k.reduce().to_bytes());
+            match result {
+                Ok(point) => break point,
+                Err(e) if e == qat_shim::qat::Status::Retry => continue,
+                _ => return Err(InternalError::VerifyError.into()),
+            };
         };
+        let k_minus_A = CompressedEdwardsY::from_slice(&k_minus_A)
+            .decompress()
+            .unwrap();
+        // let R = k_minus_A + sB;
+        let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
+        // ******
+
         // let sB = Ok(Some(&signature.s * &constants::ED25519_BASEPOINT_TABLE));
         // let sB = inst
         //     .point_multiplication(&Bx, &By, &signature.s.to_bytes())

@@ -35,8 +35,6 @@ mod vectors {
     use std::fs::File;
     use std::io::BufRead;
     use std::io::BufReader;
-    use std::sync::mpsc::channel;
-    use std::sync::mpsc::TryRecvError;
 
     use super::*;
 
@@ -46,23 +44,10 @@ mod vectors {
     #[test]
     fn against_reference_implementation() {
         qat_shim::qat::start_session("SSL").expect("start session failed");
-        qat_shim::qat::qae_mem_init().expect("qae_mem_init failed");
         let inst: Instance = qat::get_first_instance().expect("failed to get first instance");
-        inst.set_address_translation()
-            .expect("set address translation failed");
+        // inst.set_address_translation()
+        //     .expect("set address translation failed");
         inst.start().expect("start instance failed");
-        // let (tx, poll) = if inst.is_polled().unwrap() {
-        //     let (tx, rx) = channel();
-        //     let inst2 = inst.clone();
-        //     let poll = std::thread::spawn(move || {
-        //         while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
-        //             let _ = inst2.clone().poll_once();
-        //         }
-        //     });
-        //     (Some(tx), Some(poll))
-        // } else {
-        //     (None, None)
-        // };
         // TestGolden
         let mut line: String;
         let mut lineno: usize = 0;
@@ -109,14 +94,8 @@ mod vectors {
                 lineno
             );
         }
-        // if let Some(tx) = tx {
-        //     tx.send(())
-        //         .expect("Failed to send stop signal to polling thread");
-        //     poll.unwrap().join().expect("Polling thread panicked");
-        // }
         inst.stop().expect("stop instance failed");
         qat_shim::qat::stop_session().expect("stop session failed");
-        qat_shim::qat::qae_mem_destroy();
     }
 
     // From https://tools.ietf.org/html/rfc8032#section-7.3
@@ -166,8 +145,6 @@ mod vectors {
 
 #[cfg(test)]
 mod integrations {
-    use std::sync::mpsc::{channel, TryRecvError};
-
     use super::*;
     use qat_shim::qat::{self, Instance};
     use rand::rngs::OsRng;
@@ -176,23 +153,10 @@ mod integrations {
     fn sign_verify() {
         // TestSignVerify
         qat_shim::qat::start_session("SSL").expect("start session failed");
-        qat_shim::qat::qae_mem_init().expect("qae_mem_init failed");
         let inst: Instance = qat::get_first_instance().expect("failed to get first instance");
-        inst.set_address_translation()
-            .expect("set address translation failed");
+        // inst.set_address_translation()
+        //     .expect("set address translation failed");
         inst.start().expect("start instance failed");
-        // let (tx, poll) = if inst.is_polled().unwrap() {
-        //     let (tx, rx) = channel();
-        //     let inst2 = inst.clone();
-        //     let poll = std::thread::spawn(move || {
-        //         while matches!(rx.try_recv(), Err(TryRecvError::Empty)) {
-        //             let _ = inst2.clone().poll_once();
-        //         }
-        //     });
-        //     (Some(tx), Some(poll))
-        // } else {
-        //     (None, None)
-        // };
         let keypair: Keypair;
         let good_sig: Signature;
         let bad_sig: Signature;
@@ -218,14 +182,8 @@ mod integrations {
             keypair.verify_strict(&bad, &good_sig).is_err(),
             "Verification of a signature on a different message passed!"
         );
-        // if let Some(tx) = tx {
-        //     tx.send(())
-        //         .expect("Failed to send stop signal to polling thread");
-        //     poll.unwrap().join().expect("Polling thread panicked");
-        // }
         inst.stop().expect("stop instance failed");
         qat_shim::qat::stop_session().expect("stop session failed");
-        qat_shim::qat::qae_mem_destroy();
     }
 
     #[test]
