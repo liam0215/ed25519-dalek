@@ -504,16 +504,16 @@ impl PublicKey {
         h.update(&message);
 
         k = Scalar::from_hash(h);
-        // let Bx = [
-        //     0x1A, 0xD5, 0x25, 0x8F, 0x60, 0x2D, 0x56, 0xC9, 0xB2, 0xA7, 0x25, 0x95, 0x60, 0xC7,
-        //     0x2C, 0x69, 0x5C, 0xDC, 0xD6, 0xFD, 0x31, 0xE2, 0xA4, 0xC0, 0xFE, 0x53, 0x6E, 0xCD,
-        //     0xD3, 0x36, 0x69, 0x21,
-        // ];
-        // let By = [
-        //     0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-        //     0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
-        //     0x66, 0x66, 0x66, 0x66,
-        // ];
+        let Bx = [
+            0x1A, 0xD5, 0x25, 0x8F, 0x60, 0x2D, 0x56, 0xC9, 0xB2, 0xA7, 0x25, 0x95, 0x60, 0xC7,
+            0x2C, 0x69, 0x5C, 0xDC, 0xD6, 0xFD, 0x31, 0xE2, 0xA4, 0xC0, 0xFE, 0x53, 0x6E, 0xCD,
+            0xD3, 0x36, 0x69, 0x21,
+        ];
+        let By = [
+            0x58, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66, 0x66,
+            0x66, 0x66, 0x66, 0x66,
+        ];
         let minus_Ax = minus_A.X.to_bytes();
         let minus_Ay = minus_A.Y.to_bytes();
         let k_minus_A = loop {
@@ -528,18 +528,18 @@ impl PublicKey {
             .decompress()
             .unwrap();
 
-        // let sB = loop {
-        //     let result = inst.point_multiplication(&Bx, &By, &signature.s.reduce().to_bytes());
-        //     match result {
-        //         Ok(point) => break point,
-        //         Err(e) if e == qat_shim::qat::Status::Retry => continue,
-        //         _ => return Err(InternalError::VerifyError.into()),
-        //     }
-        // };
-        // let sB = CompressedEdwardsY::from_slice(&sB).decompress().unwrap();
-        //
-        // let R = k_minus_A + sB;
-        let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
+        let sB = loop {
+            let result = inst.point_multiplication(&Bx, &By, &signature.s.reduce().to_bytes());
+            match result {
+                Ok(point) => break point,
+                Err(e) if e == qat_shim::qat::Status::Retry => continue,
+                _ => return Err(InternalError::VerifyError.into()),
+            }
+        };
+        let sB = CompressedEdwardsY::from_slice(&sB).decompress().unwrap();
+
+        let R = k_minus_A + sB;
+        // let R = k_minus_A + (&signature.s * &constants::ED25519_BASEPOINT_TABLE);
 
         //
         //     match k_minus_A {
